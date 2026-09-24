@@ -93,11 +93,11 @@ func init() {
 }
 
 // nearest returns the closest named colour to the given Lab coordinates
-// under CIE76 deltaE, along with the distance.
-func nearest(l, a, b float64) (name, hex string, dist float64) {
+// under the supplied deltaE metric, along with the distance.
+func nearest(l, a, b float64, deltaE func(l1, a1, b1, l2, a2, b2 float64) float64) (name, hex string, dist float64) {
 	best := math.Inf(1)
 	for _, c := range labTable {
-		d := deltaE76(l, a, b, c.l, c.a, c.b)
+		d := deltaE(l, a, b, c.l, c.a, c.b)
 		if d < best {
 			best = d
 			name, hex = c.name, c.hex

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"math"
 	"os"
@@ -11,28 +12,41 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: nearcol <hex-colour>   e.g. nearcol #3366ff")
+	ciede2000 := flag.Bool("ciede2000", false, "use CIEDE2000 instead of CIE76 for deltaE")
+	flag.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: nearcol [-ciede2000] <hex-colour>   e.g. nearcol #3366ff")
+	}
+	flag.Parse()
+
+	args := flag.Args()
+	if len(args) != 1 {
+		flag.Usage()
 		os.Exit(1)
 	}
 
-	r, g, b, err := parseHex(os.Args[1])
+	r, g, b, err := parseHex(args[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nearcol: %v\n", err)
 		os.Exit(1)
 	}
 
+	deltaE, label := deltaE76, "CIE76"
+	if *ciede2000 {
+		deltaE, label = deltaE2000, "CIEDE2000"
+	}
+
 	l, a, bb := rgbToLab(r, g, b)
-	name, hex, dist := nearest(l, a, bb)
+	name, hex, dist := nearest(l, a, bb, deltaE)
 
 	fmt.Printf("input:  #%02x%02x%02x  (L=%.1f a=%.1f b=%.1f)\n", r, g, b, l, a, bb)
 	fmt.Printf("match:  %s (%s)\n", name, hex)
-	fmt.Printf("deltaE: %.2f  %s\n", dist, describe(dist))
+	fmt.Printf("deltaE: %.2f  %s  [%s]\n", dist, describe(dist), label)
 }
 
-// describe gives a rough plain-English sense of a CIE76 deltaE value.
-// The thresholds are the commonly cited rules of thumb, not a precise
-// perceptual model (that would need CIEDE2000).
+// describe gives a rough plain-English sense of a deltaE value. The
+// thresholds are the commonly cited rules of thumb; they were derived for
+// CIE76 but stay roughly right for CIEDE2000 too since both scales are
+// anchored to a just-noticeable-difference of about 1.
 func describe(dist float64) string {
 	switch {
 	case dist < 1:
@@ -128,4 +142,92 @@ func deltaE76(l1, a1, b1, l2, a2, b2 float64) float64 {
 	da := a1 - a2
 	db := b1 - b2
 	return math.Sqrt(dl*dl + da*da + db*db)
+}
+
+// deltaE2000 is the CIEDE2000 colour difference formula (Sharma, Wu, Dalal
+// 2005). It corrects known non-uniformities in CIE76 - chroma and hue get
+// their own weighting, plus a rotation term that fixes the blue region
+// where CIE76 overstates distance. More faithful to how people actually
+// judge closeness, at the cost of being unreadable at a glance.
+func deltaE2000(l1, a1, b1, l2, a2, b2 float64) float64 {
+	c1 := math.Hypot(a1, b1)
+	c2 := math.Hypot(a2, b2)
+	avgC := (c1 + c2) / 2
+
+	g := 0.5 * (1 - math.Sqrt(math.Pow(avgC, 7)/(math.Pow(avgC, 7)+math.Pow(25, 7))))
+
+	a1p := a1 * (1 + g)
+	a2p := a2 * (1 + g)
+
+	c1p := math.Hypot(a1p, b1)
+	c2p := math.Hypot(a2p, b2)
+	avgCp := (c1p + c2p) / 2
+
+	h1p := atan2Deg(b1, a1p)
+	h2p := atan2Deg(b2, a2p)
+
+	var deltahp float64
+	switch {
+	case c1p*c2p == 0:
+		deltahp = 0
+	case math.Abs(h1p-h2p) <= 180:
+		deltahp = h2p - h1p
+	case h2p <= h1p:
+		deltahp = h2p - h1p + 360
+	default:
+		deltahp = h2p - h1p - 360
+	}
+
+	deltaLp := l2 - l1
+	deltaCp := c2p - c1p
+	deltaHp := 2 * math.Sqrt(c1p*c2p) * math.Sin(degToRad(deltahp)/2)
+
+	var avgHp float64
+	switch {
+	case c1p*c2p == 0:
+		avgHp = h1p + h2p
+	case math.Abs(h1p-h2p) <= 180:
+		avgHp = (h1p + h2p) / 2
+	case h1p+h2p < 360:
+		avgHp = (h1p + h2p + 360) / 2
+	default:
+		avgHp = (h1p + h2p - 360) / 2
+	}
+
+	avgLp := (l1 + l2) / 2
+
+	t := 1 - 0.17*math.Cos(degToRad(avgHp-30)) +
+		0.24*math.Cos(degToRad(2*avgHp)) +
+		0.32*math.Cos(degToRad(3*avgHp+6)) -
+		0.20*math.Cos(degToRad(4*avgHp-63))
+
+	deltaTheta := 30 * math.Exp(-math.Pow((avgHp-275)/25, 2))
+	rc := 2 * math.Sqrt(math.Pow(avgCp, 7)/(math.Pow(avgCp, 7)+math.Pow(25, 7)))
+	rt := -math.Sin(degToRad(2*deltaTheta)) * rc
+
+	sl := 1 + (0.015*math.Pow(avgLp-50, 2))/math.Sqrt(20+math.Pow(avgLp-50, 2))
+	sc := 1 + 0.045*avgCp
+	sh := 1 + 0.015*avgCp*t
+
+	const kl, kc, kh = 1, 1, 1
+
+	dl := deltaLp / (kl * sl)
+	dc := deltaCp / (kc * sc)
+	dh := deltaHp / (kh * sh)
+
+	return math.Sqrt(dl*dl + dc*dc + dh*dh + rt*dc*dh)
+}
+
+func degToRad(d float64) float64 { return d * math.Pi / 180 }
+
+// atan2Deg is math.Atan2 in degrees, normalised to [0, 360).
+func atan2Deg(y, x float64) float64 {
+	if y == 0 && x == 0 {
+		return 0
+	}
+	deg := math.Atan2(y, x) * 180 / math.Pi
+	if deg < 0 {
+		deg += 360
+	}
+	return deg
 }
