@@ -65,6 +65,6 @@ Standard library only, no dependencies.
 
 ## the colour table
 
-`colors.go` holds a working set of CSS/X11 colour keywords, not the full
-147. If the match you get back feels too coarse, that's the table to
-extend - add a name and a 6-digit hex value.
+`colors.go` holds the full CSS Color Module Level 4 / X11 keyword list
+(147 names, including the `gray`/`grey` spelling pairs). Anything nearer
+than that is either an exact hit or genuinely not a named colour.
